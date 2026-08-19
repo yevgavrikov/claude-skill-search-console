@@ -27,16 +27,39 @@ cp -r claude-skill-search-console/{SKILL.md,scripts} ~/.claude/skills/search-con
 Project-scoped instead of global: copy into `.claude/skills/search-console/`
 inside the repo.
 
-Requires Node 20+ (uses built-in `fetch` and `base64url`) and, for the
-interactive auth path, the `gcloud` CLI.
+Requires Node 20+ (built-in `fetch` and `base64url`) and the `gcloud` CLI.
+
+## Install gcloud
+
+`gcloud` is what mints the credential. Nothing here works without it unless you
+go the service-account route, which also uses `gcloud` to create the key.
+
+```bash
+brew install --cask google-cloud-sdk     # macOS
+```
+
+Other platforms, including the Linux tarball, apt/yum repos and the Windows
+installer: <https://cloud.google.com/sdk/docs/install>
+
+Then log in, if you have not used gcloud before:
+
+```bash
+gcloud auth login
+```
+
+That is a plain account login. It is not yet the API credential — that is the
+next section.
 
 ## Authenticate
 
-Both paths need a Google Cloud project with the API enabled. Any project you own
-works; the API is free.
+Both paths need a Google Cloud project with the Search Console API enabled. Any
+project you own works, the API is free, and no billing account is required.
 
 ```bash
-gcloud config set project <your-project>
+gcloud projects list                              # do you already have one?
+gcloud projects create my-gsc-project             # if not (id must be globally unique)
+
+gcloud config set project my-gsc-project
 gcloud services enable searchconsole.googleapis.com
 ```
 
@@ -76,15 +99,43 @@ users. Keep the key outside any repo.
 
 ## Use
 
+The script lives inside the skill directory, so point at it rather than using a
+relative path from wherever you happen to be:
+
 ```bash
-node scripts/gsc.mjs sites                    # properties + permission level
-node scripts/gsc.mjs inspect --all            # coverage for every sitemap URL
-node scripts/gsc.mjs inspect https://example.com/pricing
-node scripts/gsc.mjs sitemaps                 # submitted vs indexed, errors
-node scripts/gsc.mjs analytics --days 28 --dimension query --limit 25
-node scripts/gsc.mjs analytics --dimension page --limit 50
-node scripts/gsc.mjs check                    # live HTTP sweep, no auth needed
+GSC=~/.claude/skills/search-console/scripts/gsc.mjs
 ```
+
+First, confirm auth works and see what the account can reach:
+
+```bash
+node $GSC sites
+```
+
+```
+SITE                     PERMISSION
+sc-domain:example.com    siteOwner
+```
+
+`siteOwner` or `siteFullUser` is what you want. `siteRestrictedUser` will 403 on
+URL Inspection. If you get "No credential found", the login above did not
+complete — re-run it.
+
+Then:
+
+```bash
+node $GSC inspect --all            # coverage for every sitemap URL
+node $GSC inspect https://example.com/pricing
+node $GSC sitemaps                 # submitted vs indexed, errors
+node $GSC analytics --days 28 --dimension query --limit 25
+node $GSC analytics --dimension page --limit 50
+node $GSC check --site https://example.com/   # live HTTP sweep, no credential needed
+```
+
+`check` is the one command that works before any authentication, as long as the
+site is named — `--site`, `--sitemap`, or explicit URLs. Useful for separating
+"the site is broken" from "Search Console is reporting something confusing".
+Auto-detecting the property is the only part that needs a credential.
 
 Or just ask Claude: *"why isn't /pricing indexed?"* — the skill supplies the
 diagnostic order and the `coverageState` mapping.
@@ -92,7 +143,7 @@ diagnostic order and the `coverageState` mapping.
 Example:
 
 ```
-$ node scripts/gsc.mjs inspect --all
+$ node $GSC inspect --all
 Using property sc-domain:example.com
 Inspecting 53 URL(s) against sc-domain:example.com
 VERDICT   COVERAGE                                  LAST CRAWL   URL

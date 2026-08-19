@@ -8,18 +8,33 @@ description: Query Google Search Console and diagnose indexing problems — "URL
 Read-only Google Search Console access via `scripts/gsc.mjs` (zero dependencies,
 official API, `webmasters.readonly` scope). Setup: `README.md`.
 
+**Resolve the script path first.** It lives beside this file, and the working
+directory is usually somewhere else entirely, so a bare `scripts/gsc.mjs` will
+fail with `Cannot find module`. Set `GSC` to whichever of these exists:
+
 ```bash
-node scripts/gsc.mjs sites                    # properties + permission level
-node scripts/gsc.mjs inspect --all            # coverage for every sitemap URL
-node scripts/gsc.mjs inspect <url> [<url>]    # specific URLs
-node scripts/gsc.mjs sitemaps                 # submitted vs indexed, errors
-node scripts/gsc.mjs analytics --days 28 --dimension query --limit 25
-node scripts/gsc.mjs check                    # live HTTP sweep, no auth needed
+GSC=~/.claude/skills/search-console/scripts/gsc.mjs      # personal install
+GSC=.claude/skills/search-console/scripts/gsc.mjs        # project install
+```
+
+```bash
+node $GSC sites                    # properties + permission level
+node $GSC inspect --all            # coverage for every sitemap URL
+node $GSC inspect <url> [<url>]    # specific URLs
+node $GSC sitemaps                 # submitted vs indexed, errors
+node $GSC analytics --days 28 --dimension query --limit 25
+node $GSC check --site <property>  # live HTTP sweep, needs no credential
 ```
 
 If the script reports "No credential found", send the user to `README.md`. Setup
-is a one-time human step (a browser consent flow, or a service-account key added
-as a **Full** user in Search Console) — do not try to work around it.
+is a one-time human step (installing `gcloud`, then a browser consent flow — or a
+service-account key added as a **Full** user in Search Console). Do not try to
+work around it, and do not attempt the browser login on the user's behalf: it
+needs their Google account and their consent.
+
+`check` is the exception — it needs no credential as long as the site is named
+(`--site`, `--sitemap`, or explicit URLs), so it can answer "is the site serving
+correctly?" before auth is set up at all.
 
 ## Diagnose in this order
 
@@ -32,7 +47,7 @@ Most "not indexed" reports are not site bugs. Rule those out first.
 2. **What property type is it?** A URL-prefix property on `http://` reports
    every page as "Page with redirect". Domain properties look like
    `sc-domain:example.com`; URL-prefix like `https://example.com/`.
-3. **Is the site actually serving correctly?** `node scripts/gsc.mjs check`
+3. **Is the site actually serving correctly?** `node $GSC check --site <property>`
    sweeps every sitemap URL and shows status, redirect target, and any
    `X-Robots-Tag`. Wanted: 200, no redirect, no noindex.
 4. **Is a sitemap registered?** `sitemaps` returning no rows is a real and very

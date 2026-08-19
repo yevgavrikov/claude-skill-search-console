@@ -189,7 +189,16 @@ async function resolveSitemap(opts, site) {
     const data = await api(`${WMX}/sites/${encodeURIComponent(site)}/sitemaps`);
     const first = (data.sitemap || []).find((s) => !s.isSitemapsIndex) || (data.sitemap || [])[0];
     if (first?.path) return first.path;
-  } catch { /* fall through to robots.txt */ }
+  } catch { /* fall through to the credential-free lookup */ }
+
+  return resolveSitemapWithoutAuth(opts, site);
+}
+
+// robots.txt then the conventional path. Touches no API, so `check` stays usable
+// with no credential at all.
+async function resolveSitemapWithoutAuth(opts, site) {
+  if (opts.sitemap) return opts.sitemap;
+  if (process.env.GSC_SITEMAP) return process.env.GSC_SITEMAP;
 
   const origin = siteOrigin(site);
   try {
@@ -337,8 +346,27 @@ async function cmdAnalytics(opts) {
 // Search Console complaint is about the site rather than about which URL was
 // inspected.
 async function cmdCheck(opts) {
-  const site = opts.site || process.env.GSC_SITE || (await resolveSite(opts));
-  const urls = opts._.length > 1 ? opts._.slice(1) : await sitemapUrls(await resolveSitemap(opts, site));
+  // Auth-free as long as the property (or a sitemap) is named. Auto-detecting
+  // the property is the one step that needs the API, so failing there must not
+  // read as "this command needs credentials".
+  let site = opts.site || process.env.GSC_SITE || null;
+  if (!site && !opts.sitemap && !process.env.GSC_SITEMAP && opts._.length <= 1) {
+    try {
+      site = await resolveSite(opts);
+    } catch {
+      throw new Error(
+        'check needs to know what to sweep. Either name the site or skip auth entirely:\n' +
+          '  gsc.mjs check --site https://example.com/\n' +
+          '  gsc.mjs check --sitemap https://example.com/sitemap.xml\n' +
+          '  gsc.mjs check https://example.com/page\n' +
+          'Auto-detecting the property is the only part that needs a credential.',
+      );
+    }
+  }
+  const urls =
+    opts._.length > 1
+      ? opts._.slice(1)
+      : await sitemapUrls(await resolveSitemapWithoutAuth(opts, site));
   return mapLimited(urls, 8, async (url) => {
     try {
       const res = await fetch(url, { redirect: 'manual' });
