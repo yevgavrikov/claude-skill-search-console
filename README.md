@@ -1,8 +1,9 @@
 # Search Console skill for Claude Code
 
 A Claude Code skill that reads Google Search Console directly: index coverage for
-every URL in your sitemap, sitemap status, and search analytics — plus the
-diagnostic playbook for reading the results correctly.
+every URL in your sitemap, sitemap status, and search analytics — plus an
+`hreflang`/canonical audit that needs no credentials at all, and the diagnostic
+playbook for reading the results correctly.
 
 No dependencies. No third-party server. Read-only.
 
@@ -268,9 +269,9 @@ Stated up front so nothing here is a surprise after you install it.
 
 - **No sitemap submission and no "request indexing".** Both need the read-write
   scope. See below — this is a deliberate choice, not an oversight.
-- **No `hreflang` or structured-data validation.** A broken `hreflang` set or
-  invalid schema is a common real cause of indexing trouble and this tool cannot
-  see either. Search Console's own reports still cover them.
+- **No structured-data validation.** Invalid schema is a common real cause of
+  lost rich results and this tool cannot see it. (`hreflang` and canonicals *are*
+  covered — see `audit` above.)
 - **No search-analytics filtering or pagination.** `--dimension` and `--limit`
   work, but there is no `dimensionFilterGroups` support and no paging past the
   API's per-request row cap, so large sites cannot be fully exported.
@@ -299,8 +300,8 @@ Stated up front so nothing here is a surprise after you install it.
   sitemap, so a URL missing from it is invisible to a sweep. Pass such URLs
   explicitly.
 
-Issues and pull requests welcome, particularly for `hreflang` validation and
-analytics paging — those are the two most useful missing pieces.
+Issues and pull requests welcome, particularly for analytics paging, structured
+data validation, and a test suite — the most useful missing pieces.
 
 ## Deliberately read-only
 
