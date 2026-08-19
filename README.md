@@ -132,6 +132,32 @@ node $GSC analytics --dimension page --limit 50
 node $GSC check --site https://example.com/   # live HTTP sweep, no credential needed
 ```
 
+### Tracking change over time
+
+Indexing moves slowly, so the useful question is rarely "what is the state" but
+"what changed since last time". Save a baseline, compare against it later:
+
+```bash
+node $GSC inspect --all --save baseline.json          # today
+node $GSC inspect --all --compare baseline.json       # a week later
+```
+
+```
+3 change(s) against baseline.json:
+
+CHANGE                FROM                      TO                        URL
+LOST INDEXING         Submitted and indexed     URL is unknown to Google  https://example.com/pricing
+DROPPED FROM SITEMAP  Submitted and indexed     -                         https://example.com/old
+GAINED                URL is unknown to Google  Submitted and indexed     https://example.com/guides/x
+```
+
+Only changes are printed, regressions first. Coverage strings are classified into
+buckets before comparison, so Google rewording a message is not reported as a
+change. This catches the failure that a one-off check never will: a page that was
+indexed quietly dropping out.
+
+Pair `--save` with `--compare` to roll the baseline forward as you go.
+
 `check` is the one command that works before any authentication, as long as the
 site is named — `--site`, `--sitemap`, or explicit URLs. Useful for separating
 "the site is broken" from "Search Console is reporting something confusing".

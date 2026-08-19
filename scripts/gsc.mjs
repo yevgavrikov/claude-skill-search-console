@@ -20,7 +20,7 @@
 
 import { createSign } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -382,6 +382,53 @@ async function cmdCheck(opts) {
   });
 }
 
+// ------------------------------------------------------------------ baseline
+
+async function loadBaseline(path) {
+  const raw = JSON.parse(await readFile(path.replace(/^~/, process.env.HOME), 'utf8'));
+  const rows = Array.isArray(raw) ? raw : raw.rows || [];
+  return new Map(rows.map((r) => [r.url, r]));
+}
+
+// Coverage strings are prose and Google rewords them; classify to a bucket so a
+// harmless rewording is not reported as a regression.
+function bucket(coverage, verdict) {
+  const c = String(coverage || '');
+  if (/indexed/i.test(c) && !/not indexed/i.test(c)) return 'indexed';
+  if (/unknown to Google/i.test(c)) return 'unknown';
+  if (/not indexed/i.test(c)) return 'not-indexed';
+  if (/redirect/i.test(c)) return 'redirect';
+  if (/noindex|robots\.txt/i.test(c)) return 'blocked';
+  if (/404|error/i.test(c) || verdict === 'ERROR') return 'error';
+  if (/canonical/i.test(c)) return 'duplicate';
+  return c ? 'other' : 'unknown';
+}
+
+function diffAgainstBaseline(rows, baseline) {
+  const changes = [];
+  for (const r of rows) {
+    const was = baseline.get(r.url);
+    if (!was) {
+      changes.push({ change: 'NEW URL', from: '-', to: r.coverage, url: r.url });
+      continue;
+    }
+    const a = bucket(was.coverage, was.verdict);
+    const b = bucket(r.coverage, r.verdict);
+    if (a === b) continue;
+    const label =
+      b === 'indexed' ? 'GAINED' : a === 'indexed' ? 'LOST INDEXING' : 'CHANGED';
+    changes.push({ change: label, from: was.coverage, to: r.coverage, url: r.url });
+  }
+  for (const [url, was] of baseline) {
+    if (!rows.some((r) => r.url === url)) {
+      changes.push({ change: 'DROPPED FROM SITEMAP', from: was.coverage, to: '-', url });
+    }
+  }
+  // Regressions first — a page that lost indexing matters more than one that gained.
+  const rank = { 'LOST INDEXING': 0, 'DROPPED FROM SITEMAP': 1, CHANGED: 2, 'NEW URL': 3, GAINED: 4 };
+  return changes.sort((x, y) => rank[x.change] - rank[y.change]);
+}
+
 // -------------------------------------------------------------------- render
 
 function renderInspect(rows) {
@@ -432,7 +479,26 @@ try {
   let render = renderTable;
   switch (opts._[0]) {
     case 'sites': rows = await cmdSites(opts); break;
-    case 'inspect': rows = await cmdInspect(opts); render = renderInspect; break;
+    case 'inspect': {
+      rows = await cmdInspect(opts);
+      render = renderInspect;
+      if (opts.save) {
+        await writeFile(opts.save.replace(/^~/, process.env.HOME), JSON.stringify(rows, null, 2));
+        if (!opts.quiet) process.stderr.write(`Baseline written to ${opts.save}\n`);
+      }
+      if (opts.compare) {
+        const changes = diffAgainstBaseline(rows, await loadBaseline(opts.compare));
+        console.log(
+          opts.json
+            ? JSON.stringify(changes, null, 2)
+            : changes.length === 0
+              ? `No change against ${opts.compare} (${rows.length} URLs).`
+              : `${changes.length} change(s) against ${opts.compare}:\n\n${renderTable(changes)}`,
+        );
+        process.exit(0);
+      }
+      break;
+    }
     case 'sitemaps': rows = await cmdSitemaps(opts); break;
     case 'analytics': rows = await cmdAnalytics(opts); break;
     case 'check': rows = await cmdCheck(opts); break;
@@ -442,6 +508,8 @@ try {
           '  sites                    properties and permission level\n' +
           '  inspect --all            index coverage for every sitemap URL\n' +
           '  inspect <url> [<url>]    index coverage for specific URLs\n' +
+          '                           --save <file>     write a JSON baseline\n' +
+          '                           --compare <file>  report only what changed\n' +
           '  sitemaps                 submitted vs indexed, errors, last read\n' +
           '  analytics                clicks/impressions/CTR/position\n' +
           '  check                    live HTTP sweep of sitemap URLs (no auth)\n\n' +

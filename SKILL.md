@@ -24,7 +24,14 @@ node $GSC inspect <url> [<url>]    # specific URLs
 node $GSC sitemaps                 # submitted vs indexed, errors
 node $GSC analytics --days 28 --dimension query --limit 25
 node $GSC check --site <property>  # live HTTP sweep, needs no credential
+
+node $GSC inspect --all --save baseline.json      # record today's state
+node $GSC inspect --all --compare baseline.json   # report only what changed
 ```
+
+For any recurring check, prefer `--compare` over re-reading a full table. It
+prints regressions first and catches a page silently losing indexing, which a
+fresh sweep read in isolation will not show.
 
 If the script reports "No credential found", send the user to `README.md`. Setup
 is a one-time human step (installing `gcloud`, then a browser consent flow — or a
