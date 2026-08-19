@@ -25,6 +25,8 @@ node $GSC sitemaps                 # submitted vs indexed, errors
 node $GSC analytics --days 28 --dimension query --limit 25
 node $GSC check --site <property>  # live HTTP sweep, needs no credential
 
+node $GSC audit --site <property>  # hreflang/canonical/noindex validation, no credential
+
 node $GSC inspect --all --save baseline.json      # record today's state
 node $GSC inspect --all --compare baseline.json   # report only what changed
 ```
@@ -57,13 +59,19 @@ Most "not indexed" reports are not site bugs. Rule those out first.
 3. **Is the site actually serving correctly?** `node $GSC check --site <property>`
    sweeps every sitemap URL and shows status, redirect target, and any
    `X-Robots-Tag`. Wanted: 200, no redirect, no noindex.
-4. **Is a sitemap registered?** `sitemaps` returning no rows is a real and very
+4. **Run `audit`.** It needs no credential and catches what Search Console
+   reports only indirectly, if at all: a non-reciprocal or self-omitting
+   `hreflang` set (invalid, so Google ignores the whole cluster), a canonical
+   pointing away from the page, a noindex page listed in the sitemap, redirect
+   sources in the sitemap. A locale page that will not index is usually one of
+   these rather than anything in the Search Console UI.
+5. **Is a sitemap registered?** `sitemaps` returning no rows is a real and very
    common finding. Google can discover a sitemap from `robots.txt`, but
    discovery is slower and patchier, which shows up as scattered
    "URL is unknown to Google" on deep or locale pages while shallow pages index
    fine. Submitting the sitemap in the Search Console UI is usually the single
    highest-value fix.
-5. **Only now read `coverageState`.**
+6. **Only now read `coverageState`.**
 
 ## coverageState → what to do
 
@@ -113,9 +121,9 @@ approximating an answer from what the tool does return:
 
 - **Sitemap submission and "request indexing"** need the read-write scope, which
   this tool does not hold. Direct the user to the Search Console UI.
-- **`hreflang` correctness, structured data, Core Web Vitals, crawl stats,
-  security issues** — not exposed here at all. Search Console's own reports cover
-  them.
+- **Structured data, Core Web Vitals, crawl stats, security issues** — not
+  exposed here. Search Console's own reports cover them. (`hreflang` and
+  canonical ARE covered — use `audit`.)
 - **Search-analytics filtering and paging past the row cap** are not implemented,
   so a full export of a large site is not possible with this tool.
 - **A URL missing from the sitemap is invisible to `inspect --all`.** Pass it

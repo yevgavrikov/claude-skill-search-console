@@ -1,0 +1,32 @@
+{
+  "name": "gsc-inspect",
+  "version": "1.0.0",
+  "description": "Read-only Google Search Console CLI \u2014 index coverage, hreflang/canonical audit, sitemap status, search analytics. Zero dependencies.",
+  "keywords": [
+    "google-search-console",
+    "seo",
+    "indexing",
+    "hreflang",
+    "sitemap",
+    "claude-code",
+    "cli"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "gsc-inspect": "scripts/gsc.mjs"
+  },
+  "files": [
+    "scripts/gsc.mjs",
+    "SKILL.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yevgavrikov/claude-skill-search-console.git"
+  }
+}

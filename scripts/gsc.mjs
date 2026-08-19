@@ -38,8 +38,13 @@ function parseArgs(argv) {
     if (a === '--json') opts.json = true;
     else if (a === '--quiet') opts.quiet = true;
     else if (a === '--all') opts.all = true;
-    else if (a.startsWith('--')) opts[a.slice(2)] = argv[++i];
-    else opts._.push(a);
+    else if (a.startsWith('--')) {
+      const value = argv[++i];
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error(`${a} needs a value (got ${value === undefined ? 'nothing' : value}).`);
+      }
+      opts[a.slice(2)] = value;
+    } else opts._.push(a);
   }
   return opts;
 }
@@ -153,9 +158,11 @@ async function api(url, { method = 'GET', body } = {}) {
 let resolvedSite = null;
 
 async function resolveSite(opts) {
-  if (resolvedSite) return resolvedSite;
+  // Explicit input always wins; the cache exists only to avoid repeating the
+  // auto-detect API call.
   if (opts.site) return (resolvedSite = opts.site);
   if (process.env.GSC_SITE) return (resolvedSite = process.env.GSC_SITE);
+  if (resolvedSite) return resolvedSite;
 
   const data = await api(`${WMX}/sites`);
   const entries = data.siteEntry || [];
@@ -201,8 +208,15 @@ async function resolveSitemapWithoutAuth(opts, site) {
   if (process.env.GSC_SITEMAP) return process.env.GSC_SITEMAP;
 
   const origin = siteOrigin(site);
+  // robots.txt only ever lives at the host root, so a URL-prefix property like
+  // https://example.com/blog/ must still be asked at https://example.com.
+  let hostRoot = origin;
   try {
-    const res = await fetch(`${origin}/robots.txt`);
+    hostRoot = new URL(origin).origin;
+  } catch { /* keep origin as-is */ }
+
+  try {
+    const res = await fetch(`${hostRoot}/robots.txt`);
     if (res.ok) {
       const line = (await res.text()).match(/^\s*sitemap:\s*(\S+)/im);
       if (line) return line[1];
@@ -429,6 +443,237 @@ function diffAgainstBaseline(rows, baseline) {
   return changes.sort((x, y) => rank[x.change] - rank[y.change]);
 }
 
+// ------------------------------------------------------------------- audit
+
+// Head-tag extraction by regex. That is unsound for HTML in general, but the
+// tags we want are attribute-only elements in <head>, and this keeps the script
+// dependency-free. A page whose head is generated client-side will look empty
+// here — which is itself worth knowing, since Google may see the same thing.
+function parseHead(html) {
+  const head = html.slice(0, Math.max(html.search(/<\/head>/i), 0) || 200_000);
+  const attr = (tag, name) => {
+    const m = tag.match(new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, 'i'));
+    return m ? m[1].trim() : null;
+  };
+  const links = head.match(/<link\b[^>]*>/gi) || [];
+  const metas = head.match(/<meta\b[^>]*>/gi) || [];
+
+  const relIs = (tag, want) => (attr(tag, 'rel') || '').toLowerCase().split(/\s+/).includes(want);
+
+  return {
+    canonical: links.filter((l) => relIs(l, 'canonical')).map((l) => attr(l, 'href')),
+    alternates: links
+      .filter((l) => relIs(l, 'alternate') && attr(l, 'hreflang'))
+      .map((l) => ({ lang: attr(l, 'hreflang'), href: attr(l, 'href') })),
+    robots: metas
+      .filter((m) => (attr(m, 'name') || '').toLowerCase() === 'robots')
+      .map((m) => (attr(m, 'content') || '').toLowerCase()),
+    title: (head.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [, null])[1]?.trim() || null,
+    description: metas
+      .filter((m) => (attr(m, 'name') || '').toLowerCase() === 'description')
+      .map((m) => attr(m, 'content'))[0] || null,
+  };
+}
+
+const normalizeUrl = (u) => {
+  try {
+    const p = new URL(u);
+    p.hash = '';
+    return p.toString().replace(/\/$/, '') || p.toString();
+  } catch {
+    return u;
+  }
+};
+
+async function fetchPage(url) {
+  try {
+    const res = await fetch(url, { redirect: 'manual' });
+    const page = {
+      url,
+      status: res.status,
+      location: res.headers.get('location'),
+      xRobots: (res.headers.get('x-robots-tag') || '').toLowerCase(),
+      canonical: [],
+      alternates: [],
+      robots: [],
+      title: null,
+      description: null,
+    };
+    if (res.status >= 200 && res.status < 300) Object.assign(page, parseHead(await res.text()));
+    return page;
+  } catch (err) {
+    return { url, status: 'ERR', error: err.message, canonical: [], alternates: [], robots: [] };
+  }
+}
+
+async function cmdAudit(opts) {
+  let site = opts.site || process.env.GSC_SITE || null;
+  if (!site && !opts.sitemap && !process.env.GSC_SITEMAP && opts._.length <= 1) {
+    try {
+      site = await resolveSite(opts);
+    } catch {
+      throw new Error(
+        'audit needs to know what to sweep:\n' +
+          '  gsc.mjs audit --site https://example.com/\n' +
+          '  gsc.mjs audit --sitemap https://example.com/sitemap.xml\n' +
+          '  gsc.mjs audit https://example.com/page\n' +
+          'It uses no credential — auto-detecting the property is the only part that would.',
+      );
+    }
+  }
+
+  const seeds =
+    opts._.length > 1 ? opts._.slice(1) : await sitemapUrls(await resolveSitemapWithoutAuth(opts, site));
+  const inSitemap = new Set(seeds.map(normalizeUrl));
+
+  if (!opts.quiet && !opts.json) process.stderr.write(`Auditing ${seeds.length} URL(s)\n`);
+
+  const pages = new Map();
+  for (const p of await mapLimited(seeds, 8, fetchPage)) pages.set(normalizeUrl(p.url), p);
+
+  // hreflang reciprocity cannot be judged without the pages being pointed at, so
+  // pull in any declared alternate that the sitemap did not already cover.
+  const extra = [
+    ...new Set(
+      [...pages.values()]
+        .flatMap((p) => p.alternates.map((a) => normalizeUrl(a.href)))
+        .filter((u) => u && !pages.has(u)),
+    ),
+  ];
+  if (extra.length) {
+    if (!opts.quiet && !opts.json) {
+      process.stderr.write(`Following ${extra.length} hreflang target(s) outside the sitemap\n`);
+    }
+    for (const p of await mapLimited(extra, 8, fetchPage)) pages.set(normalizeUrl(p.url), p);
+  }
+
+  const issues = [];
+  const add = (severity, check, url, detail) => issues.push({ severity, check, url, detail });
+
+  const titles = new Map();
+
+  for (const key of inSitemap) {
+    const p = pages.get(key);
+    if (!p) continue;
+
+    if (p.status === 'ERR') {
+      add('ERROR', 'unreachable', p.url, p.error);
+      continue;
+    }
+    if (p.status >= 300 && p.status < 400) {
+      add('ERROR', 'sitemap-url-redirects', p.url, `${p.status} -> ${p.location || '?'}`);
+      continue; // nothing else is meaningful about a redirect source
+    }
+    if (p.status !== 200) {
+      add('ERROR', 'sitemap-url-not-200', p.url, `status ${p.status}`);
+      continue;
+    }
+
+    const noindex = [...p.robots, p.xRobots].some((v) => v && v.includes('noindex'));
+    if (noindex) add('ERROR', 'noindex-in-sitemap', p.url, 'page is noindex but listed in the sitemap');
+
+    // Canonical
+    if (p.canonical.length === 0) {
+      add('WARN', 'canonical-missing', p.url, 'no <link rel=canonical>');
+    } else if (p.canonical.length > 1) {
+      add('ERROR', 'canonical-multiple', p.url, p.canonical.join(' , '));
+    } else {
+      const c = normalizeUrl(p.canonical[0]);
+      if (c !== key) {
+        add(
+          'ERROR',
+          'canonical-points-elsewhere',
+          p.url,
+          `canonical -> ${p.canonical[0]} (page will not index on its own)`,
+        );
+        if (!inSitemap.has(c)) add('WARN', 'canonical-target-not-in-sitemap', p.url, p.canonical[0]);
+      }
+    }
+
+    // Title
+    if (!p.title) add('WARN', 'title-missing', p.url, 'no <title>');
+    else {
+      const dupe = titles.get(p.title);
+      if (dupe) add('WARN', 'title-duplicate', p.url, `same <title> as ${dupe}`);
+      else titles.set(p.title, p.url);
+    }
+    if (!p.description) add('WARN', 'description-missing', p.url, 'no meta description');
+
+    // hreflang
+    if (p.alternates.length === 0) continue;
+
+    const langs = new Map();
+    for (const a of p.alternates) {
+      if (!/^([a-z]{2,3}(-[A-Za-z0-9]{2,8})*|x-default)$/i.test(a.lang)) {
+        add('ERROR', 'hreflang-invalid-code', p.url, `"${a.lang}" is not a valid language code`);
+      }
+      const prev = langs.get(a.lang.toLowerCase());
+      if (prev && normalizeUrl(prev) !== normalizeUrl(a.href)) {
+        add('ERROR', 'hreflang-conflicting', p.url, `${a.lang} points at both ${prev} and ${a.href}`);
+      }
+      langs.set(a.lang.toLowerCase(), a.href);
+    }
+
+    const selfDeclared = p.alternates.some((a) => normalizeUrl(a.href) === key);
+    if (!selfDeclared) {
+      add('ERROR', 'hreflang-no-self-reference', p.url, 'page omits itself from its own hreflang set');
+    }
+    if (![...langs.keys()].includes('x-default')) {
+      add('WARN', 'hreflang-no-x-default', p.url, 'no x-default in the set');
+    }
+
+    for (const a of p.alternates) {
+      const targetKey = normalizeUrl(a.href);
+      const target = pages.get(targetKey);
+      if (!target) continue;
+
+      if (target.status === 'ERR' || (target.status !== 200 && !(target.status >= 300 && target.status < 400))) {
+        add('ERROR', 'hreflang-target-broken', p.url, `${a.lang} -> ${a.href} (status ${target.status})`);
+        continue;
+      }
+      if (target.status >= 300 && target.status < 400) {
+        add('WARN', 'hreflang-target-redirects', p.url, `${a.lang} -> ${a.href} (${target.status})`);
+        continue;
+      }
+      // Reciprocity: Google ignores a whole hreflang cluster that does not agree.
+      const back = target.alternates.some((b) => normalizeUrl(b.href) === key);
+      if (!back) {
+        add('ERROR', 'hreflang-not-reciprocal', p.url, `${a.lang} -> ${a.href} does not link back`);
+      }
+    }
+  }
+
+  const rank = { ERROR: 0, WARN: 1 };
+  issues.sort((a, b) => rank[a.severity] - rank[b.severity] || a.check.localeCompare(b.check));
+  issues.pagesChecked = pages.size;
+  issues.urlsInSitemap = inSitemap.size;
+  return issues;
+}
+
+function renderAudit(issues) {
+  const checked = `${issues.urlsInSitemap} sitemap URL(s), ${issues.pagesChecked} page(s) fetched`;
+  if (issues.length === 0) return `No issues found across ${checked}.`;
+
+  const errors = issues.filter((i) => i.severity === 'ERROR').length;
+  const checkW = Math.max(5, ...issues.map((i) => i.check.length)) + 2;
+  const urlW = Math.min(60, Math.max(3, ...issues.map((i) => i.url.length)) + 2);
+  const lines = [
+    `${pad('SEVERITY', 10)}${pad('CHECK', checkW)}${pad('URL', urlW)}DETAIL`,
+    '-'.repeat(10 + checkW + urlW + 6),
+    ...issues.map(
+      (i) => pad(i.severity, 10) + pad(i.check, checkW) + pad(i.url, urlW) + (i.detail || ''),
+    ),
+  ];
+  lines.push('', `${errors} error(s), ${issues.length - errors} warning(s) across ${checked}.`);
+
+  const byCheck = issues.reduce((acc, i) => ((acc[i.check] = (acc[i.check] || 0) + 1), acc), {});
+  lines.push('', 'By check:');
+  for (const [k, v] of Object.entries(byCheck).sort((a, b) => b[1] - a[1])) {
+    lines.push(`  ${String(v).padStart(4)}  ${k}`);
+  }
+  return lines.join('\n');
+}
+
 // -------------------------------------------------------------------- render
 
 function renderInspect(rows) {
@@ -472,9 +717,8 @@ function renderTable(rows) {
 
 // ---------------------------------------------------------------------- main
 
-const opts = parseArgs(process.argv.slice(2));
-
 try {
+  const opts = parseArgs(process.argv.slice(2));
   let rows;
   let render = renderTable;
   switch (opts._[0]) {
@@ -502,6 +746,7 @@ try {
     case 'sitemaps': rows = await cmdSitemaps(opts); break;
     case 'analytics': rows = await cmdAnalytics(opts); break;
     case 'check': rows = await cmdCheck(opts); break;
+    case 'audit': rows = await cmdAudit(opts); render = renderAudit; break;
     default:
       process.stderr.write(
         'Usage: node scripts/gsc.mjs <command> [flags]\n\n' +
@@ -512,7 +757,8 @@ try {
           '                           --compare <file>  report only what changed\n' +
           '  sitemaps                 submitted vs indexed, errors, last read\n' +
           '  analytics                clicks/impressions/CTR/position\n' +
-          '  check                    live HTTP sweep of sitemap URLs (no auth)\n\n' +
+          '  check                    live HTTP sweep of sitemap URLs (no auth)\n' +
+          '  audit                    hreflang/canonical/noindex validation (no auth)\n\n' +
           'Flags: --site <property> --sitemap <url> --json --quiet\n' +
           '       analytics: --days N --dimension query|page|country|device --limit N\n',
       );

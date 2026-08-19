@@ -18,10 +18,18 @@ service account), stays on your machine, and cannot write.
 
 ## Install
 
+As a Claude Code skill:
+
 ```bash
-git clone https://github.com/<you>/claude-skill-search-console
+git clone https://github.com/yevgavrikov/claude-skill-search-console
 mkdir -p ~/.claude/skills/search-console
 cp -r claude-skill-search-console/{SKILL.md,scripts} ~/.claude/skills/search-console/
+```
+
+Or just run the CLI without installing anything:
+
+```bash
+npx github:yevgavrikov/claude-skill-search-console audit --site https://example.com/
 ```
 
 Project-scoped instead of global: copy into `.claude/skills/search-console/`
@@ -131,6 +139,55 @@ node $GSC analytics --days 28 --dimension query --limit 25
 node $GSC analytics --dimension page --limit 50
 node $GSC check --site https://example.com/   # live HTTP sweep, no credential needed
 ```
+
+### Auditing what Search Console cannot tell you
+
+`audit` validates the things that cause indexing problems but never appear as a
+Search Console error. It uses no credential and no API quota — just HTTP — so it
+works before authentication is set up at all.
+
+```bash
+node $GSC audit --site https://example.com/
+node $GSC audit --sitemap https://example.com/sitemap.xml
+node $GSC audit https://example.com/de/page      # specific URLs
+```
+
+```
+SEVERITY  CHECK                       URL                            DETAIL
+ERROR     hreflang-not-reciprocal     https://example.com/de/pricing  en -> https://example.com/pricing does not link back
+ERROR     canonical-points-elsewhere  https://example.com/old         canonical -> https://example.com/new
+WARN      hreflang-no-x-default       https://example.com/de/pricing  no x-default in the set
+
+2 error(s), 1 warning(s) across 53 sitemap URL(s), 61 page(s) fetched.
+```
+
+Checks performed:
+
+| Severity | Check | Why it matters |
+| --- | --- | --- |
+| ERROR | `sitemap-url-redirects` | A sitemap should list final URLs, not redirect sources |
+| ERROR | `sitemap-url-not-200` | Dead URL advertised to Google |
+| ERROR | `noindex-in-sitemap` | The sitemap asks for indexing, the page refuses it |
+| ERROR | `canonical-points-elsewhere` | The page cannot index on its own |
+| ERROR | `canonical-multiple` | Conflicting canonicals; Google picks arbitrarily |
+| ERROR | `hreflang-no-self-reference` | A set that omits its own page is invalid and ignored wholesale |
+| ERROR | `hreflang-not-reciprocal` | Non-reciprocal links invalidate the whole cluster |
+| ERROR | `hreflang-invalid-code` | e.g. `hreflang="uk"` meant as Ukrainian, or an invented code |
+| ERROR | `hreflang-conflicting` | One language pointing at two different URLs |
+| ERROR | `hreflang-target-broken` | Declared alternate is 404 or unreachable |
+| ERROR | `unreachable` | Page did not respond |
+| WARN | `hreflang-target-redirects` | Alternate resolves through a redirect |
+| WARN | `hreflang-no-x-default` | No fallback for unmatched locales |
+| WARN | `canonical-missing`, `canonical-target-not-in-sitemap` | |
+| WARN | `title-missing`, `title-duplicate`, `description-missing` | |
+
+`hreflang` targets outside the sitemap are fetched too, since reciprocity cannot
+be judged without seeing the page being pointed at.
+
+A caveat worth knowing: head tags are extracted with regular expressions, which
+is unsound for HTML in general but adequate for attribute-only elements in
+`<head>`. A page whose head is built client-side will look empty to this tool —
+which is itself informative, because Google may see the same thing.
 
 ### Tracking change over time
 
