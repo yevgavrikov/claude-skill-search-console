@@ -106,6 +106,26 @@ canonical, check what Google actually received: `curl` the URL and look for real
 content in the HTML. A shell that renders client-side can index inconsistently.
 Pre-rendering or SSR is the fix, not a Search Console setting.
 
+## Limits — say so rather than improvising
+
+If a user asks for one of these, tell them it is not covered instead of
+approximating an answer from what the tool does return:
+
+- **Sitemap submission and "request indexing"** need the read-write scope, which
+  this tool does not hold. Direct the user to the Search Console UI.
+- **`hreflang` correctness, structured data, Core Web Vitals, crawl stats,
+  security issues** — not exposed here at all. Search Console's own reports cover
+  them.
+- **Search-analytics filtering and paging past the row cap** are not implemented,
+  so a full export of a large site is not possible with this tool.
+- **A URL missing from the sitemap is invisible to `inspect --all`.** Pass it
+  explicitly rather than concluding it does not exist.
+- **`check` reports one redirect hop only.** Do not present its output as a full
+  redirect chain.
+- **Data lag is real.** Search Console lags ~2 days and index state lags crawling
+  by longer, so a sweep re-run the next day proves nothing. Say that instead of
+  reading noise as a trend.
+
 ## Quota
 
 URL Inspection allows 2000 requests/day and 600/minute per property. The script

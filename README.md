@@ -203,6 +203,48 @@ Flags: `--site`, `--sitemap`, `--json`, `--quiet`; `analytics` also takes
 `robotsTxtState`, `pageFetchState`, `referringUrls`, mobile usability and rich
 results — not just the summary columns.
 
+## What this does not do
+
+Stated up front so nothing here is a surprise after you install it.
+
+**Not implemented**
+
+- **No sitemap submission and no "request indexing".** Both need the read-write
+  scope. See below — this is a deliberate choice, not an oversight.
+- **No `hreflang` or structured-data validation.** A broken `hreflang` set or
+  invalid schema is a common real cause of indexing trouble and this tool cannot
+  see either. Search Console's own reports still cover them.
+- **No search-analytics filtering or pagination.** `--dimension` and `--limit`
+  work, but there is no `dimensionFilterGroups` support and no paging past the
+  API's per-request row cap, so large sites cannot be fully exported.
+- **No Core Web Vitals, no crawl-stats, no security-issues reports.** Only
+  indexing, sitemaps, and search analytics.
+- **`check` follows one redirect hop.** A multi-hop chain shows its first hop
+  only, by design — the point is spotting an unexpected redirect, not tracing it.
+- **No tests.** The script is verified by hand against a live property. If you
+  rely on it in CI, add your own checks first.
+
+**Practical limits**
+
+- **URL Inspection allows 2000 requests/day per property.** `inspect --all` costs
+  one per URL, so a site with thousands of pages cannot be swept in a day.
+  Inspect a sample plus the pages that matter.
+- **Search Console data lags roughly two days**, and index state lags crawling by
+  longer. Re-running a sweep the next day tells you almost nothing; a week is a
+  sensible interval.
+- **Interactive tokens last about an hour.** A 401 means re-run the
+  `application-default login`. Use a service account for anything unattended.
+- **Service accounts need Full permission**, not Restricted, or URL Inspection
+  returns 403.
+- **Node 20+.** Developed and tested on macOS; the code is plain Node with no
+  platform-specific calls, but Linux and Windows are untested.
+- **`inspect` output is only as good as your sitemap.** `--all` reads the
+  sitemap, so a URL missing from it is invisible to a sweep. Pass such URLs
+  explicitly.
+
+Issues and pull requests welcome, particularly for `hreflang` validation and
+analytics paging — those are the two most useful missing pieces.
+
 ## Deliberately read-only
 
 Submitting a sitemap or requesting indexing needs the read-write `webmasters`
