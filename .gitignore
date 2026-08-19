@@ -1,0 +1,4 @@
+# Credentials — never commit
+*.json
+!package.json
+.env
